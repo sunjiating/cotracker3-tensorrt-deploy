@@ -1,0 +1,48 @@
+version: '3.9'
+
+services:
+  cotracker:
+    # build:
+    #   context: ./video_shock_serve
+    #   dockerfile: Dockerfile
+    image: "192.168.2.100:5000/osmagic/ai_service_dev:tensorrt10.12-devel-full"
+    container_name: cotracker
+    command: /bin/bash
+    privileged: true
+    tty: true
+    stdin_open: true
+    network_mode: "host"
+    shm_size: 8g
+    ipc: host
+    # pid: "host"  # 禁止使用 pid: "host"，因为会导致进程混淆,无法使用宿主机和容器之间的进程隔离cusor连接失败
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    environment:
+      - DISPLAY=${DISPLAY}
+      - NVIDIA_DRIVER_CAPABILITIES=video,compute,utility
+
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /etc/localtime:/etc/localtime
+      - /data/sun/co-tracker:/workspace
+      # --- 新增配置开始 ---
+      # 将宿主机准备好的配置文件夹映射到容器的 /root/.codex
+      # 假设你在 compose 文件同级目录下创建了 codex_config 文件夹
+      - /data/sun/codex_config:/root/.codex
+      # --- 新增配置结束 ---
+    working_dir: /workspace
+
+    cap_add:
+      - SYS_PTRACE
+    
+    security_opt:
+      - seccomp=unconfined
+    
+    restart: unless-stopped
