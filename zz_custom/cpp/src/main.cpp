@@ -25,10 +25,12 @@ struct Options {
     int target_width{512};
     bool mp4_mode{false};
     int batch{2};
+    int max_frames{32};
 };
 
 Options parse_args(int argc, char** argv) {
     Options opt;
+    bool mode_provided = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         auto next = [&]() -> std::string {
@@ -47,6 +49,7 @@ Options parse_args(int argc, char** argv) {
             opt.output_dir = next();
         } else if (arg == "--mode") {
             opt.mode = next();
+            mode_provided = true;
         } else if (arg == "--window") {
             opt.window_len = std::stoi(next());
         } else if (arg == "--step") {
@@ -66,6 +69,8 @@ Options parse_args(int argc, char** argv) {
             opt.target_width = std::stoi(next());
         } else if (arg == "--batch") {
             opt.batch = std::stoi(next());
+        } else if (arg == "--max_frames") {
+            opt.max_frames = std::stoi(next());
         } else {
             throw std::runtime_error("Unknown flag: " + arg);
         }
@@ -77,9 +82,17 @@ Options parse_args(int argc, char** argv) {
     if (opt.batch <= 0) {
         throw std::runtime_error("--batch must be positive");
     }
+    if (opt.max_frames <= 0) {
+        throw std::runtime_error("--max_frames must be positive");
+    }
 
     if (opt.mp4_mode) {
-        opt.mode = "online";
+        if (!mode_provided) {
+            opt.mode = "online";
+        }
+        if (opt.mode != "online" && opt.mode != "offline") {
+            throw std::runtime_error("--mode must be 'online' or 'offline' for mp4 inputs");
+        }
         if (opt.input_video_path.empty()) {
             throw std::runtime_error("--input_video must be specified for mp4 mode");
         }
@@ -198,9 +211,18 @@ void run_npy_pipeline(const Options& opt) {
 
 void run_video_pipeline(const Options& opt) {
     auto sequence = cotracker::load_video_frames(opt.input_video_path, opt.target_height, opt.target_width);
+    if (opt.mode == "offline" && opt.max_frames > 0 && sequence.frames.size() > static_cast<size_t>(opt.max_frames)) {
+        std::cout << "Trimming video to first " << opt.max_frames << " frames to fit offline engine profile\n";
+        sequence.frames.resize(opt.max_frames);
+    }
     HostTensor video = cotracker::video_to_tensor(sequence, opt.batch);
     HostTensor queries = cotracker::build_grid_queries(opt.grid_size, sequence.width, sequence.height, opt.batch);
-    cotracker::InferenceResult outputs = run_online_inference(opt, video, queries);
+    cotracker::InferenceResult outputs;
+    if (opt.mode == "offline") {
+        outputs = run_offline_inference(opt, video, queries);
+    } else {
+        outputs = run_online_inference(opt, video, queries);
+    }
     maybe_threshold(outputs, opt.visibility_thr);
     save_outputs(opt, outputs);
     HostTensor tracks_b0 = cotracker::select_batch(outputs.tracks, 0);

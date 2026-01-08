@@ -76,12 +76,13 @@
   1. `--input_video` 指定 MP4，OpenCV 读取并 resize 到 `--target_height/--target_width`（默认 384×512）。  
   2. `build_grid_queries(--grid)` 构造规则网格（默认 8×8）作为初始查询点，并按 `--batch` 复制。  
   3. `video_to_tensor` 将视频转成 `(B,T,3,H,W)`，B 由 `--batch` 控制（默认 2，会复制多份相同视频以匹配 engine 的最稳定配置）。  
-  4. 通过在线 TensorRT 滑窗推理得到 `(B,T,N,2)` 的轨迹和可见性。  
+  4. 根据 `--mode` 选择在线滑窗或离线整序列推理；若选择 offline，则会自动裁切到 `--max_frames` 帧以满足 Engine profile（默认 32，可根据离线 profile 调整）。  
   5. `render_tracks_to_video` 将第 0 个 batch 的轨迹/可见性叠加到原帧：  
      - 可见性小于 `max(--thr,0.5)` 的点不绘制；  
      - 可见点以红点标记，并在相邻帧之间用绿线连线。  
-  6. 使用 `--output_video` 保存 MP4（默认 `./tracked.mp4`）；同时在 `--output` 目录下写入 `tracks.npy/visibility.npy/confidence.npy`。
-- **示例命令**：
+  6. 使用 `--output_video` 保存 MP4（默认 `./tracked.mp4`）；同时在 `--output` 目录下写入 `tracks.npy/visibility.npy/confidence.npy`。  
+  7. Engine 在 batch ≥ 2 时更稳定，故默认 `--batch=2`，渲染仅取第 0 个 batch。
+- **示例命令（在线）**：
   ```bash
   LD_LIBRARY_PATH=/usr/local/tensorrt/TensorRT-10.12.0.36/lib:/usr/local/tensorrt/TensorRT-10.12.0.36/targets/x86_64-linux-gnu/lib:/usr/local/cuda/lib64 \
     zz_custom/build/cpp/cotracker_trt \
@@ -91,7 +92,17 @@
     --output_video zz_custom/build/outputs/apple_tracked.mp4 \
     --window 16 --step 8 --grid 8 --batch 2 --thr 0.5
   ```
-
+- **示例命令（离线）**：
+  ```bash
+  LD_LIBRARY_PATH=/usr/local/tensorrt/TensorRT-10.12.0.36/lib:/usr/local/tensorrt/TensorRT-10.12.0.36/targets/x86_64-linux-gnu/lib:/usr/local/cuda/lib64 \
+    zz_custom/build/cpp/cotracker_trt \
+    --engine zz_custom/build/engines/cotracker_offline.engine \
+    --output zz_custom/build/outputs/apple_offline \
+    --input_video assets/apple.mp4 \
+    --output_video zz_custom/build/outputs/apple_offline_tracked.mp4 \
+    --mode offline --grid 8 --batch 2 --max_frames 32 --thr 0.5
+  ```
+检查下online模型的pythorch实现，重点关注迭代次数，窗口的重叠、中间状态处理，分析你的部署方案对齐了吗
 ## 接口与参数说明
 | 选项 | 说明 |
 | --- | --- |
@@ -100,12 +111,13 @@
 | `--input_video` | 触发 MP4 端到端流程；会自动进入 online 模式。 |
 | `--output` | 推理结果（npy/中间文件）保存目录。 |
 | `--output_video` | 渲染轨迹的 MP4 输出路径，默认 `./tracked.mp4`。 |
-| `--mode` | `offline` 或 `online`，在 NPY 流程中生效；MP4 流程固定 online。 |
+| `--mode` | `offline` 或 `online`，在 NPY 流程中生效；MP4 模式下可手动指定运行离线/在线引擎（默认 online）。 |
 | `--window` / `--step` | 在线滑窗长度与提交步长，需与 engine profile 匹配。 |
 | `--grid` | MP4 流程中生成网格查询点的边长（例如 8 表示 8×8=64 个点）。 |
 | `--target_height/--target_width` | MP4 预处理后的分辨率，需与训练/engine 分辨率一致。 |
 | `--thr` | 可见性阈值；`-1` 表示不二值化，仅输出原始概率。 |
 | `--batch` | MP4 模式下复制多少份视频与查询，默认 2（建议 ≥2 以匹配 engine）。 |
+| `--max_frames` | 离线 MP4 模式允许的最大帧数（默认 32，对应离线 Engine profile 的最大帧数）。 |
 
 ## 使用手册
 1. **准备数据与模型**  
