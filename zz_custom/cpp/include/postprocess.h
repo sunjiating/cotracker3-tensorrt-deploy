@@ -1,30 +1,23 @@
 #pragma once
 
-#include <algorithm>
-#include <vector>
+#include <cstdint>
 
 #include "preprocess.h"
 
 namespace cotracker {
 
-inline HostTensor create_tracks_tensor(int64_t batch, int64_t frames, int64_t points) {
-    HostTensor tensor;
-    tensor.shape = {batch, frames, points, 2};
-    tensor.data.resize(static_cast<size_t>(batch * frames * points * 2));
-    return tensor;
-}
+struct InferenceResult {
+    HostTensor tracks;
+    HostTensor visibility;
+    HostTensor confidence;
+};
 
-inline HostTensor create_visibility_tensor(int64_t batch, int64_t frames, int64_t points) {
-    HostTensor tensor;
-    tensor.shape = {batch, frames, points};
-    tensor.data.resize(static_cast<size_t>(batch * frames * points));
-    return tensor;
-}
-
-inline void apply_threshold(HostTensor& vis, float thr) {
-    for (auto& v : vis.data) {
-        v = v >= thr ? 1.0f : 0.0f;
-    }
-}
+HostTensor create_tracks_tensor(int64_t batch, int64_t frames, int64_t points);
+HostTensor create_visibility_tensor(int64_t batch, int64_t frames, int64_t points);
+void apply_threshold(HostTensor& vis, float thr);
+void assign_frames(HostTensor& dst, const HostTensor& src, int64_t start, int64_t length);
+void assign_scalar(HostTensor& dst, const HostTensor& src, int64_t start, int64_t length);
+void update_queries(HostTensor& queries, const HostTensor& tracks, int64_t frame_index);
+HostTensor select_batch(const HostTensor& tensor, int64_t batch_index);
 
 }  // namespace cotracker

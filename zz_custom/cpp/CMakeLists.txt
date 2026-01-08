@@ -8,17 +8,23 @@ set(TENSORRT_ROOT "/usr/local/tensorrt/TensorRT-10.12.0.36" CACHE STRING "Tensor
 set(CMAKE_CUDA_ARCHITECTURES 90 89 86 80 CACHE STRING "" FORCE)
 
 find_package(CUDAToolkit REQUIRED)
+find_package(OpenCV REQUIRED)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 include_directories(${TENSORRT_ROOT}/include)
 include_directories(/usr/local/cuda/include)
+include_directories(${OpenCV_INCLUDE_DIRS})
 
 link_directories(${TENSORRT_ROOT}/lib)
 link_directories(${TENSORRT_ROOT}/targets/x86_64-linux-gnu/lib)
 
 add_executable(cotracker_trt
     src/main.cpp
+    src/preprocess.cpp
+    src/postprocess.cpp
+    src/trt_runner.cpp
+    src/video_io.cpp
     third_party/cnpy.cpp
 )
 
@@ -28,5 +34,6 @@ target_link_libraries(cotracker_trt
         nvonnxparser
         nvinfer_plugin
         CUDA::cudart
+        ${OpenCV_LIBS}
         z
 )

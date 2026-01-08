@@ -53,42 +53,59 @@
    - 这种方式与 PyTorch offline 逻辑一致（一次性推完整段），受限于 Engine profile 中的最大帧数；若需要更长序列，可重新构建更大 profile 的 Engine。
 
 ### Online 部署
-数据切窗：zz_custom/cpp/src/main.cpp (lines 84-154) 的 run_online 会循环处理整个视频。每次调用 slice_with_padding（zz_custom/cpp/include/preprocess.h (lines 33-73)）从原始 (B,T,3,H,W) 中截取 window_len 帧；若最后一段不足窗口长度，就用最后一帧重复填满，保证传给 TensorRT 的形状永远是 (B,window_len,3,H,W)。
-
-TensorRT 运行：使用 TrtRunner（zz_custom/cpp/include/trt_runner.h (lines 10-102)）加载提前 build 的 cotracker_online.engine。每个窗口都按以下顺序执行：
-
-set_input_shape("video", chunk.shape)、set_input_shape("queries", next_queries.shape) 将 Engine 的显式 batch 维设为当前窗口的尺寸。
-copy_input 将 GPU buffer 填入视频与查询点；查询点 next_queries 初始化为第一帧坐标，滑窗迭代时用上一窗的预测更新。
-prepare_output 为 tracks/visibility/confidence 分配输出 buffer。
-enqueue() 发起推理；若 TensorRT 报错会抛异常，便于调试。
-copy_output 把三路输出拷回主机内存。
-滑窗提交与状态更新：
-
-commit_len：若当前窗口已经覆盖全片（window_end >= 总帧数），则提交所有有效帧；否则只提交 step 帧（通常为窗口的一半），其余帧保持到下一次迭代用于“重叠”。
-提交时调用 assign_frames/assign_scalar（main.cpp (lines 56-80)）把 chunk 输出写到全局轨迹、可见性、置信度数组对应帧段。
-若还未结束视频，用 update_queries（main.cpp (lines 64-80)）把提交段末尾的预测位置写回 next_queries，作为下一窗口的起点，实现“窗口间状态传递”。
-结果保存：循环结束后（即整个视频处理完），可选对 visibility 应用阈值（--thr 默认为 -1 表示不过滤），然后用 save_npy 写出 tracks/visibility/confidence，路径由 --output 控制。
-
-Engine 构建：在线模型的 ONNX 通过 zz_custom/export/onnx_wrappers.py 中 ExportConfig(offline=False, window_len=16) 导出，随后 build_engines.default_shapes("online")（zz_custom/export/build_engines.py (lines 27-41)）把 video profile 固定在 [min=1x8, opt=2x16, max=2x32] 帧范围内，确保 TensorRT 仅在这些帧数下编译高效最优的 kernel。C++ 滑窗逻辑正是围绕 window=16、step=8 设计，保持与 Engine profile 一致。
-
-多批次支持：所有 NPY 的 batch 维保留并传给 TensorRT；窗口切片和结果写回都按 (batch, frame, point, dim) 进行 memcpy，因此可以一次处理多段视频。
-
-总体流程相当于：PyTorch 层面用滑窗逐块推理 → ONNX 里保留该逻辑 → TensorRT engine 针对固定窗口编译 → C++ 运行时通过 padding + 滑窗循环 + 查询点更新，实现任意视频长度的在线推理。
 1. **ONNX 导出**  
-   - `ExportConfig(offline=False, window_len=16)`，模型中 UpdateFormer 等结构与官方 online 流程一致。  
-   - dummy 输入帧数与窗口一致，保证 TensorRT 能在导入时推断静态窗口大小。
+   - `ExportConfig(offline=False, window_len=16)`，与官方 `online_demo.py` 的窗口和步长一致。  
+   - Dummy 输入帧数与窗口长度一致，便于 TensorRT 推断显式 batch 维。
 2. **TensorRT Engine**  
    - `build_engines.default_shapes("online")`：`video` profile `[1x8, 2x16, 2x32]`，`queries` `[1x32, 2x64, 2x128]`。  
-   - Engine 仅接受显式长度在 profile 范围内的窗口，因此需要固定窗口（默认 16 帧）。
+   - Engine 只接受 profile 范围内的时间维，因此最后一窗必须填充到固定长度。
 3. **滑窗推理逻辑（`run_online`）**  
-   - **切片与填充**：使用 `slice_with_padding` 从原视频取 `window_len` 帧；若剩余帧不足，则复制最后一帧填满窗口，确保输入 shape 恒定。  
-   - **状态维护**：`next_queries` 保存上一窗口提交末帧的坐标；每次推理后用 `update_queries` 用最新轨迹更新查询点，实现跨窗口跟踪。  
-   - **提交策略**：若窗口覆盖到视频末端，则提交所有有效帧；否则只提交 `step`（默认 8）帧，形成滑动窗口并减少重算。  
-   - **多 batch**：所有 memcpy/赋值都按 `(B, T, N, 2)` 维度进行，可同时推多段视频。  
-   - **结果写回**：`assign_frames/assign_scalar` 只写真实帧段，其余填充帧被忽略，最终输出长度与原视频一致。
-4. **优势**  
-   - 通过窗口化 + 查询点更新，可以处理任意长度视频，同时满足 TensorRT 对固定输入形状的要求。  
-   - 与 PyTorch online reference (`run_online_sliding`) 的算法保持一致，比较差异控制在 1e-2 ~ 1e-3 量级。
+   - **切片与填充**：`slice_with_padding` 以 `window_len` 切片，不足部分复制末帧。  
+   - **状态维护**：`next_queries` 捕获上一窗提交末尾的坐标，`update_queries` 在每次提交后刷新查询点，实现状态传递。  
+   - **提交策略**：若已经抵达序列尾部，提交所有有效帧；否则仅提交 `step` 帧并保留重叠区域。  
+   - **写回**：`assign_frames/assign_scalar` 将 chunk 输出填入全局 `tracks/visibility/confidence` 的真实帧段，跳过填充帧。  
+4. **优点**  
+   - 满足 TensorRT 静态窗口要求的同时可以处理任意长度视频。  
+   - 与 PyTorch 的 `run_online_sliding` 逻辑一致，数值误差保持在 1e-2 以内。  
+5. **多批次**  
+   - NPY 输入的 batch 维保留，滑窗/写回均按 `(B,T,N,2)` 处理，可同时推多个样本。
+
+## MP4 推理与可视化
+- **模块**：`video_io.h/cpp` + `main.cpp` 中的 `run_video_pipeline`。
+- **流程**：  
+  1. `--input_video` 指定 MP4，OpenCV 读取并 resize 到 `--target_height/--target_width`（默认 384×512）。  
+  2. `build_grid_queries(--grid)` 构造规则网格（默认 8×8）作为初始查询点，并按 `--batch` 复制。  
+  3. `video_to_tensor` 将视频转成 `(B,T,3,H,W)`，B 由 `--batch` 控制（默认 2，会复制多份相同视频以匹配 engine 的最稳定配置）。  
+  4. 通过在线 TensorRT 滑窗推理得到 `(B,T,N,2)` 的轨迹和可见性。  
+  5. `render_tracks_to_video` 将第 0 个 batch 的轨迹/可见性叠加到原帧：  
+     - 可见性小于 `max(--thr,0.5)` 的点不绘制；  
+     - 可见点以红点标记，并在相邻帧之间用绿线连线。  
+  6. 使用 `--output_video` 保存 MP4（默认 `./tracked.mp4`）；同时在 `--output` 目录下写入 `tracks.npy/visibility.npy/confidence.npy`。
+- **示例命令**：
+  ```bash
+  LD_LIBRARY_PATH=/usr/local/tensorrt/TensorRT-10.12.0.36/lib:/usr/local/tensorrt/TensorRT-10.12.0.36/targets/x86_64-linux-gnu/lib:/usr/local/cuda/lib64 \
+    zz_custom/build/cpp/cotracker_trt \
+    --engine zz_custom/build/engines/cotracker_online.engine \
+    --output zz_custom/build/outputs/apple_online \
+    --input_video assets/apple.mp4 \
+    --output_video zz_custom/build/outputs/apple_tracked.mp4 \
+    --window 16 --step 8 --grid 8 --batch 2 --thr 0.5
+  ```
+
+## 接口与参数说明
+| 选项 | 说明 |
+| --- | --- |
+| `--engine` | TensorRT engine 路径（offline/online均可）。 |
+| `--video`, `--queries` | NPY 输入路径，仅在离线 NPY 流程使用。 |
+| `--input_video` | 触发 MP4 端到端流程；会自动进入 online 模式。 |
+| `--output` | 推理结果（npy/中间文件）保存目录。 |
+| `--output_video` | 渲染轨迹的 MP4 输出路径，默认 `./tracked.mp4`。 |
+| `--mode` | `offline` 或 `online`，在 NPY 流程中生效；MP4 流程固定 online。 |
+| `--window` / `--step` | 在线滑窗长度与提交步长，需与 engine profile 匹配。 |
+| `--grid` | MP4 流程中生成网格查询点的边长（例如 8 表示 8×8=64 个点）。 |
+| `--target_height/--target_width` | MP4 预处理后的分辨率，需与训练/engine 分辨率一致。 |
+| `--thr` | 可见性阈值；`-1` 表示不二值化，仅输出原始概率。 |
+| `--batch` | MP4 模式下复制多少份视频与查询，默认 2（建议 ≥2 以匹配 engine）。 |
 
 ## 使用手册
 1. **准备数据与模型**  
