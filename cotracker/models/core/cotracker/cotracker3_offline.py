@@ -138,7 +138,7 @@ class CoTrackerThreeOffline(CoTrackerThreeBase):
 
         for it in range(iters):
             coords = coords.detach()  # B T N 2
-            coords_init = coords.view(B * T, N, 2)
+            coords_init = coords.reshape(B * T, N, 2)
             corr_embs = []
             corr_feats = []
             for i in range(self.corr_levels):
@@ -147,7 +147,7 @@ class CoTrackerThreeOffline(CoTrackerThreeBase):
                 )
                 track_feat_support = (
                     track_feat_support_pyramid[i]
-                    .view(B, 1, r, r, N, self.latent_dim)
+                    .reshape(B, 1, r, r, N, self.latent_dim)
                     .squeeze(1)
                     .permute(0, 3, 1, 2, 4)
                 )
@@ -157,7 +157,7 @@ class CoTrackerThreeOffline(CoTrackerThreeBase):
                 corr_emb = self.corr_mlp(corr_volume.reshape(B * T * N, r * r * r * r))
                 corr_embs.append(corr_emb)
             corr_embs = torch.cat(corr_embs, dim=-1)
-            corr_embs = corr_embs.view(B, T, N, corr_embs.shape[-1])
+            corr_embs = corr_embs.reshape(B, T, N, corr_embs.shape[-1])
 
             transformer_input = [vis[..., None], confidence[..., None], corr_embs]
 
@@ -194,7 +194,7 @@ class CoTrackerThreeOffline(CoTrackerThreeBase):
             )
 
             x = x + self.interpolate_time_embed(x, T)
-            x = x.view(B, N, T, -1)  # (B N) T D -> B N T D
+            x = x.reshape(B, N, T, -1)  # (B N) T D -> B N T D
 
             delta = self.updateformer(
                 x,

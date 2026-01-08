@@ -102,7 +102,7 @@ class CoTrackerThreeBase(nn.Module):
         xgrid, ygrid = torch.meshgrid(dy, dx, indexing="ij")
         zgrid = torch.zeros_like(xgrid, device=device)
         delta = torch.stack([zgrid, xgrid, ygrid], axis=-1)
-        delta_lvl = delta.view(1, 1, 2 * r + 1, 2 * r + 1, 3)
+        delta_lvl = delta.reshape(1, 1, 2 * r + 1, 2 * r + 1, 3)
         coords_lvl = centroid_lvl + delta_lvl
 
         if reshape_back:
@@ -138,7 +138,7 @@ class CoTrackerThreeBase(nn.Module):
         correlation_feat = bilinear_sampler(
             fmaps.reshape(B * T, D, 1, H_, W_), support_points
         )
-        return correlation_feat.view(B, T, D, N, (2 * r + 1), (2 * r + 1)).permute(
+        return correlation_feat.reshape(B, T, D, N, (2 * r + 1), (2 * r + 1)).permute(
             0, 1, 3, 4, 5, 2
         )
 
@@ -186,7 +186,7 @@ class CoTrackerThreeOnline(CoTrackerThreeBase):
         coord_preds, vis_preds, conf_preds = [], [], []
         for it in range(iters):
             coords = coords.detach()  # B T N 2
-            coords_init = coords.view(B * S, N, 2)
+            coords_init = coords.reshape(B * S, N, 2)
             corr_embs = []
             corr_feats = []
             for i in range(self.corr_levels):
@@ -195,7 +195,7 @@ class CoTrackerThreeOnline(CoTrackerThreeBase):
                 )
                 track_feat_support = (
                     track_feat_support_pyramid[i]
-                    .view(B, 1, r, r, N, self.latent_dim)
+                    .reshape(B, 1, r, r, N, self.latent_dim)
                     .squeeze(1)
                     .permute(0, 3, 1, 2, 4)
                 )
@@ -207,7 +207,7 @@ class CoTrackerThreeOnline(CoTrackerThreeBase):
                 corr_embs.append(corr_emb)
 
             corr_embs = torch.cat(corr_embs, dim=-1)
-            corr_embs = corr_embs.view(B, S, N, corr_embs.shape[-1])
+            corr_embs = corr_embs.reshape(B, S, N, corr_embs.shape[-1])
 
             transformer_input = [vis, conf, corr_embs]
 
@@ -245,7 +245,7 @@ class CoTrackerThreeOnline(CoTrackerThreeBase):
             )
 
             x = x + self.interpolate_time_embed(x, S)
-            x = x.view(B, N, S, -1)  # (B N) T D -> B N T D
+            x = x.reshape(B, N, S, -1)  # (B N) T D -> B N T D
 
             delta = self.updateformer(x, add_space_attn=add_space_attn)
 
