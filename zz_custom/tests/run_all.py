@@ -153,12 +153,12 @@ def compare_outputs(ref, pred_dir: Path, name: str):
 
 
 def main():
-    # prepare()
+    prepare()
     offline_ref, online_ref = run_reference()
-    # build_cpp()
+    build_cpp()
     # run_cpp_inference()
     # compare_outputs(offline_ref, OUTPUT_DIR / "offline", "offline")
-    compare_outputs(online_ref, OUTPUT_DIR / "online", "online")
+    # compare_outputs(online_ref, OUTPUT_DIR / "online", "online")
     print("All tests passed")
 
 

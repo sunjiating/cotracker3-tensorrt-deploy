@@ -5,7 +5,7 @@ services:
     # build:
     #   context: ./video_shock_serve
     #   dockerfile: Dockerfile
-    image: "192.168.2.100:5000/osmagic/ai_service_dev:tensorrt10.12-devel-full"
+    image: "sun/tensorrt10.12-pytorch2.9.1"
     container_name: cotracker
     command: /bin/bash
     privileged: true

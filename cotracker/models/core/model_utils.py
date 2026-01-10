@@ -238,7 +238,9 @@ def bilinear_sampler(input, coords, align_corners=True, padding_mode="border"):
     if len(sizes) == 3:
         video = input.permute(0, 2, 1, 3, 4)
         feats = sample_features5d(video, coords)
-        return feats.movedim(-1, 1)
+        dims = list(range(feats.dim()))
+        perm = [0, dims[-1]] + dims[1:-1]
+        return feats.permute(*perm)
 
     if align_corners:
         coords = coords * torch.tensor(

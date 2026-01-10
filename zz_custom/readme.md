@@ -164,3 +164,19 @@
    - `confidence.npy`: `(B, T, N)`，与模型输出一致。
 
 通过以上步骤即可完整复现 offline/online 两种 CoTracker 模型从 PyTorch 到 TensorRT 的部署，并在 C++ 端进行推理验证。***
+
+
+PyTorch Online 实现细节
+
+online_demo.py (lines 17-60) 使用 CoTrackerOnlinePredictor，每次把最近 model.step*2 帧送入模型，并通过 is_first_step 控制是否重置内部记忆。预测器在 C++/CUDA 里维护了跨窗口的中间状态（model.prev_mem, model.prev_vis 等），遮挡时下一次窗口能从上一窗口的特征、注意力状态继续迭代，迭代次数固定 iters=6。
+我们参考的 run_online_sliding（zz_custom/export/reference_inference.py (lines 30-65)）只是纯函数式地滑动窗口：窗口长度 window_len，步长 window_len/2，把上一窗口提交末帧的坐标写入下一次 queries，没有携带任何隐藏特征。
+TensorRT 部署对齐情况
+
+ONNX 导出 (zz_custom/export/onnx_wrappers.py (lines 18-59)) 调用的是 build_cotracker(... offline=False)，forward 中只返回 (coords, vis, conf)，没有 predictor 的状态接口；迭代次数同 PyTorch，一样是 iters=6。
+C++ run_online (zz_custom/cpp/src/main.cpp (lines 74-143)) 与 run_online_sliding 完全一致：窗口尺寸 window_len、提交帧数 step=window/2、把 commit_len 后一帧的坐标写回 next_queries。因此在“没有长时记忆”的这一近似上，TRT 和 run_online_sliding 是对齐的。
+为什么在线 TRT 在遮挡下偏差更大
+
+少了 predictor 的隐式记忆：CoTrackerOnlinePredictor 维护跨窗口的内部 token / memory；我们导出的 ONNX 仅包含 build_cotracker 的基础模块，窗口之间只能靠上一帧的坐标初始化，而无法复用上一窗口的注意力/特征。当目标被遮挡时，PyTorch predictor 还能依靠历史 memory 恢复，而 TRT 版本完全依赖短窗口内的信息，漂移明显。
+数值精度：为了加速，我们的 engine 在 build_engines.py (lines 18-34) 中启用了 --fp16，再加上 Myelin 的多流优化，遮挡/稀疏点场景下浮点误差会放大。PyTorch 参考是 FP32，自然更稳。
+查询更新粒度：PyTorch predictor 在 online_demo.py (lines 44-58) 中以 model.step 为周期、is_first_step 控制 overlap；而 TRT 流程始终固定 commit step=window_len/2，并没有支持 grid_query_frame / is_first_step 这类策略。
+综合来看，部署方案在“滑窗 + 仅靠坐标传递”这一近似上与 run_online_sliding 对齐，但与官方 online predictor 有显著差别（少了跨窗口隐藏状态），这正是遮挡场景明显偏差的根源。若要在 TRT 端也能应对遮挡，必须导出/实现 predictor 中的 memory 逻辑或改为较长窗口配合更频繁的 query 更新，同时谨慎使用 FP16。

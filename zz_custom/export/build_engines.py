@@ -25,7 +25,7 @@ def run_trtexec(onnx: Path, engine: Path, min_shapes: str, opt_shapes: str, max_
         "--fp16",
         f"--timingCacheFile={timing_cache}",
         "--skipInference",
-        "--builderOptimizationLevel=0",
+        # "--builderOptimizationLevel=0",
     ]
     env = os.environ.copy()
     lib_path = os.pathsep.join(
@@ -41,13 +41,13 @@ def run_trtexec(onnx: Path, engine: Path, min_shapes: str, opt_shapes: str, max_
 def default_shapes(name: str) -> Tuple[str, str, str]:
     if name == "offline":
         return (
-            "video:1x16x3x384x512,queries:1x64x3",
-            "video:2x20x3x384x512,queries:2x96x3",
+            "video:1x16x3x384x512,queries:1x16x3",
+            "video:1x20x3x384x512,queries:1x64x3",
             "video:2x32x3x384x512,queries:2x128x3",
         )
     return (
-        "video:1x8x3x384x512,queries:1x32x3",
-        "video:2x16x3x384x512,queries:2x64x3",
+        "video:1x8x3x384x512,queries:1x16x3",
+        "video:1x16x3x384x512,queries:1x64x3",
         "video:2x32x3x384x512,queries:2x128x3",
     )
 
