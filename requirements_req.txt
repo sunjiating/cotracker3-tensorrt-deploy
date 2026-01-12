@@ -75,11 +75,8 @@ sphinx_glpi_theme==0.6
 sympy==1.14.0
 tensorrt==10.12.0.36
 tensorrt-cu12==10.12.0.36
-tensorrt-cu13==10.14.1.48.post1
 tensorrt_cu12_bindings==10.12.0.36
 tensorrt_cu12_libs==10.12.0.36
-tensorrt_cu13_bindings==10.14.1.48.post1
-tensorrt_cu13_libs==10.14.1.48.post1
 torch==2.9.1
 torchprofile==0.0.4
 torchvision==0.24.1

@@ -126,6 +126,26 @@ HostTensor build_grid_queries(int grid_size, int width, int height, int batch) {
     return queries;
 }
 
+cv::Scalar colorFromHue(float h) {
+    float s = 1.0f;
+    float v = 1.0f;
+    float c = v * s;
+    float x = c * (1.0f - std::fabs(std::fmod(h * 6.0f, 2.0f) - 1.0f));
+    float m = v - c;
+    float r = 0.f, g = 0.f, b = 0.f;
+    int hi = static_cast<int>(h * 6.0f) % 6;
+    switch (hi) {
+        case 0: r = c; g = x; b = 0.f; break;
+        case 1: r = x; g = c; b = 0.f; break;
+        case 2: r = 0.f; g = c; b = x; break;
+        case 3: r = 0.f; g = x; b = c; break;
+        case 4: r = x; g = 0.f; b = c; break;
+        case 5: r = c; g = 0.f; b = x; break;
+    }
+    return cv::Scalar((b + m) * 255.f, (g + m) * 255.f, (r + m) * 255.f);
+}
+
+
 void render_tracks_to_video(const std::string& output_path,
                             const VideoSequence& base,
                             const HostTensor& tracks,
@@ -145,26 +165,30 @@ void render_tracks_to_video(const std::string& output_path,
     std::vector<cv::Mat> rendered;
     rendered.reserve(frames);
 
+    std::vector<cv::Point2f> prevPts(points, cv::Point2f(0.f, 0.f));
+    std::vector<bool> prevVisible(points, false);
+
     for (int t = 0; t < frames; ++t) {
         cv::Mat frame = base.frames[t].clone();
+        size_t frameOffsetTracks = static_cast<size_t>(t) * points * 2;
+        size_t frameOffsetVis = static_cast<size_t>(t) * points;
+        const float* tracksPtr = tracks.data.data();
         for (int p = 0; p < points; ++p) {
-            const size_t track_base = static_cast<size_t>(t * points + p) * 2;
-            const float x = tracks.data[track_base + 0];
-            const float y = tracks.data[track_base + 1];
-            const float vis = visibility.data.empty() ? 1.0f : visibility.data[t * points + p];
-            if (vis < draw_thr) {
-                continue;
+            const float* coord = tracksPtr + frameOffsetTracks + static_cast<size_t>(p) * 2;
+            float x = coord[0];
+            float y = coord[1];
+            bool visible = visibility.data.empty() ? true : (visibility.data[frameOffsetVis + p] > draw_thr);
+            cv::Point2f pt(x, y);
+            cv::Scalar color = colorFromHue(static_cast<float>(p) / std::max(1, points));
+            if (visible && prevVisible[p]) {
+                cv::line(frame, prevPts[p], pt, color, 1, cv::LINE_AA);
             }
-            cv::Point pt(static_cast<int>(std::round(x)), static_cast<int>(std::round(y)));
-            cv::circle(frame, pt, 2, cv::Scalar(0, 0, 255), cv::FILLED);
-            if (t > 0) {
-                const size_t prev_base = static_cast<size_t>((t - 1) * points + p) * 2;
-                const float prev_vis = visibility.data.empty() ? 1.0f : visibility.data[(t - 1) * points + p];
-                if (prev_vis >= draw_thr) {
-                    cv::Point prev_pt(static_cast<int>(std::round(tracks.data[prev_base + 0])),
-                                      static_cast<int>(std::round(tracks.data[prev_base + 1])));
-                    cv::line(frame, prev_pt, pt, cv::Scalar(0, 255, 0), 1);
-                }
+            if (visible) {
+                cv::circle(frame, cv::Point(static_cast<int>(std::round(x)), static_cast<int>(std::round(y))), 3, color, cv::FILLED, cv::LINE_AA);
+                prevPts[p] = pt;
+                prevVisible[p] = true;
+            } else {
+                prevVisible[p] = false;
             }
         }
         rendered.push_back(frame);

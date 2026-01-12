@@ -33,14 +33,14 @@ def prepare():
         max_frames=20,
         grid_size=8,
     )
-    # onnx_wrappers.export_model(
-    #     onnx_wrappers.ExportConfig(
-    #         checkpoint="/workspace/checkpoints/scaled_offline.pth",
-    #         window_len=60,
-    #         offline=True,
-    #         output_path=MODELS_DIR / "cotracker_offline.onnx",
-    #     )
-    # )
+    onnx_wrappers.export_model(
+        onnx_wrappers.ExportConfig(
+            checkpoint="/workspace/checkpoints/scaled_offline.pth",
+            window_len=60,
+            offline=True,
+            output_path=MODELS_DIR / "cotracker_offline.onnx",
+        )
+    )
     onnx_wrappers.export_online_aligned(
         onnx_wrappers.OnlineAlignedExportConfig(
             checkpoint="/workspace/checkpoints/scaled_online.pth",
@@ -51,11 +51,11 @@ def prepare():
     if FAST_MODE:
         print("FAST_TEST enabled, skipping TensorRT engine build.")
     else:
-        # build_engines.run_trtexec(
-        #     MODELS_DIR / "cotracker_offline.onnx",
-        #     ENGINES_DIR / "cotracker_offline.engine",
-        #     *build_engines.default_shapes("offline"),
-        # )
+        build_engines.run_trtexec(
+            MODELS_DIR / "cotracker_offline.onnx",
+            ENGINES_DIR / "cotracker_offline.engine",
+            *build_engines.default_shapes("offline"),
+        )
         build_engines.run_trtexec(
             MODELS_DIR / "cotracker_online_aligned.onnx",
             ENGINES_DIR / "cotracker_online_aligned.engine",
