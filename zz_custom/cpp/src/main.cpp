@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -90,8 +91,8 @@ Options parse_args(int argc, char** argv) {
         if (!mode_provided) {
             opt.mode = "online";
         }
-        if (opt.mode != "online" && opt.mode != "offline") {
-            throw std::runtime_error("--mode must be 'online' or 'offline' for mp4 inputs");
+        if (opt.mode != "online" && opt.mode != "online_sliding" && opt.mode != "offline") {
+            throw std::runtime_error("--mode must be 'online'/'online_sliding'/'offline' for mp4 inputs");
         }
         if (opt.input_video_path.empty()) {
             throw std::runtime_error("--input_video must be specified for mp4 mode");
@@ -139,7 +140,162 @@ cotracker::InferenceResult run_offline_inference(const Options& opt, const HostT
     return result;
 }
 
-cotracker::InferenceResult run_online_inference(const Options& opt, const HostTensor& video, const HostTensor& queries) {
+cotracker::InferenceResult run_online_inference_aligned(const Options& opt, const HostTensor& video, const HostTensor& queries) {
+    auto info = shape_from_inputs(video, queries);
+    cotracker::InferenceResult result;
+    result.tracks = cotracker::create_tracks_tensor(info.batch, info.frames, info.points);
+    result.visibility = cotracker::create_visibility_tensor(info.batch, info.frames, info.points);
+    result.confidence = cotracker::create_visibility_tensor(info.batch, info.frames, info.points);
+
+    if (opt.window_len % 2 != 0 || opt.step != opt.window_len / 2) {
+        throw std::runtime_error("Aligned online mode requires --step == --window/2 and even --window");
+    }
+    const int64_t step = opt.step;
+    const int64_t window_len = opt.window_len;
+
+    // State tensors (host-side):
+    // - prev_*: previous window's second half (length=step), used to init current window
+    // - track_support_*: cached query support features (49 support points, 128 channels) per pyramid level
+    const int64_t support_points = 49;  // (2*corr_radius+1)^2 with corr_radius=3
+    const int64_t latent_dim = 128;
+    HostTensor prev_tracks = cotracker::create_tracks_tensor(info.batch, step, info.points);
+    HostTensor prev_vis_logits = cotracker::create_visibility_tensor(info.batch, step, info.points);
+    HostTensor prev_conf_logits = cotracker::create_visibility_tensor(info.batch, step, info.points);
+    HostTensor track_support_l0;
+    HostTensor track_support_l1;
+    HostTensor track_support_l2;
+    HostTensor track_support_l3;
+    track_support_l0.shape = {info.batch, support_points, info.points, latent_dim};
+    track_support_l0.data.assign(static_cast<size_t>(info.batch * support_points * info.points * latent_dim), 0.0f);
+    track_support_l1.shape = track_support_l0.shape;
+    track_support_l1.data.assign(track_support_l0.data.size(), 0.0f);
+    track_support_l2.shape = track_support_l0.shape;
+    track_support_l2.data.assign(track_support_l0.data.size(), 0.0f);
+    track_support_l3.shape = track_support_l0.shape;
+    track_support_l3.data.assign(track_support_l0.data.size(), 0.0f);
+
+    HostTensor state_initialized;
+    state_initialized.shape = {1};
+    state_initialized.data = {0.0f};
+    HostTensor state_has_prev;
+    state_has_prev.shape = {1};
+    state_has_prev.data = {0.0f};
+
+    // Output buffers per window
+    HostTensor chunk_tracks = cotracker::create_tracks_tensor(info.batch, window_len, info.points);
+    HostTensor chunk_vis = cotracker::create_visibility_tensor(info.batch, window_len, info.points);
+    HostTensor chunk_conf = cotracker::create_visibility_tensor(info.batch, window_len, info.points);
+    HostTensor next_prev_tracks = cotracker::create_tracks_tensor(info.batch, step, info.points);
+    HostTensor next_prev_vis_logits = cotracker::create_visibility_tensor(info.batch, step, info.points);
+    HostTensor next_prev_conf_logits = cotracker::create_visibility_tensor(info.batch, step, info.points);
+    HostTensor out_track_support_l0 = track_support_l0;
+    HostTensor out_track_support_l1 = track_support_l1;
+    HostTensor out_track_support_l2 = track_support_l2;
+    HostTensor out_track_support_l3 = track_support_l3;
+    HostTensor out_state_initialized = state_initialized;
+    HostTensor out_state_has_prev = state_has_prev;
+
+    cotracker::TrtRunner runner(opt.engine);
+
+    // Shapes are fixed for aligned online: video frames are always window_len (padding is done on host).
+    runner.set_input_shape("video", {info.batch, window_len, 3, video.shape[3], video.shape[4]});
+    runner.set_input_shape("queries", queries.shape);
+    runner.set_input_shape("prev_tracks", prev_tracks.shape);
+    runner.set_input_shape("prev_vis_logits", prev_vis_logits.shape);
+    runner.set_input_shape("prev_conf_logits", prev_conf_logits.shape);
+    runner.set_input_shape("track_support_l0", track_support_l0.shape);
+    runner.set_input_shape("track_support_l1", track_support_l1.shape);
+    runner.set_input_shape("track_support_l2", track_support_l2.shape);
+    runner.set_input_shape("track_support_l3", track_support_l3.shape);
+    runner.set_input_shape("state_initialized", state_initialized.shape);
+    runner.set_input_shape("state_has_prev", state_has_prev.shape);
+
+    runner.copy_input("queries", queries.data.data(), queries.numel());
+    runner.copy_input("prev_tracks", prev_tracks.data.data(), prev_tracks.numel());
+    runner.copy_input("prev_vis_logits", prev_vis_logits.data.data(), prev_vis_logits.numel());
+    runner.copy_input("prev_conf_logits", prev_conf_logits.data.data(), prev_conf_logits.numel());
+    runner.copy_input("track_support_l0", track_support_l0.data.data(), track_support_l0.numel());
+    runner.copy_input("track_support_l1", track_support_l1.data.data(), track_support_l1.numel());
+    runner.copy_input("track_support_l2", track_support_l2.data.data(), track_support_l2.numel());
+    runner.copy_input("track_support_l3", track_support_l3.data.data(), track_support_l3.numel());
+    runner.copy_input("state_initialized", state_initialized.data.data(), state_initialized.numel());
+    runner.copy_input("state_has_prev", state_has_prev.data.data(), state_has_prev.numel());
+
+    runner.prepare_output("tracks", chunk_tracks.numel());
+    runner.prepare_output("visibility", chunk_vis.numel());
+    runner.prepare_output("confidence", chunk_conf.numel());
+    runner.prepare_output("next_prev_tracks", next_prev_tracks.numel());
+    runner.prepare_output("next_prev_vis_logits", next_prev_vis_logits.numel());
+    runner.prepare_output("next_prev_conf_logits", next_prev_conf_logits.numel());
+    runner.prepare_output("out_track_support_l0", out_track_support_l0.numel());
+    runner.prepare_output("out_track_support_l1", out_track_support_l1.numel());
+    runner.prepare_output("out_track_support_l2", out_track_support_l2.numel());
+    runner.prepare_output("out_track_support_l3", out_track_support_l3.numel());
+    runner.prepare_output("out_state_initialized", out_state_initialized.numel());
+    runner.prepare_output("out_state_has_prev", out_state_has_prev.numel());
+
+    bool supports_uploaded = false;
+    int64_t cursor = 0;
+    while (cursor < info.frames) {
+        int64_t valid_len = 0;
+        HostTensor chunk = cotracker::slice_with_padding(video, cursor, window_len, valid_len);
+        runner.copy_input("video", chunk.data.data(), chunk.numel());
+        runner.copy_input("prev_tracks", prev_tracks.data.data(), prev_tracks.numel());
+        runner.copy_input("prev_vis_logits", prev_vis_logits.data.data(), prev_vis_logits.numel());
+        runner.copy_input("prev_conf_logits", prev_conf_logits.data.data(), prev_conf_logits.numel());
+        runner.copy_input("state_initialized", state_initialized.data.data(), state_initialized.numel());
+        runner.copy_input("state_has_prev", state_has_prev.data.data(), state_has_prev.numel());
+        if (supports_uploaded) {
+            // track_support_* are already on device and bound; no need to re-upload.
+        } else if (state_initialized.data[0] >= 0.5f) {
+            runner.copy_input("track_support_l0", track_support_l0.data.data(), track_support_l0.numel());
+            runner.copy_input("track_support_l1", track_support_l1.data.data(), track_support_l1.numel());
+            runner.copy_input("track_support_l2", track_support_l2.data.data(), track_support_l2.numel());
+            runner.copy_input("track_support_l3", track_support_l3.data.data(), track_support_l3.numel());
+            supports_uploaded = true;
+        }
+
+        runner.enqueue();
+        runner.copy_output("tracks", chunk_tracks.data.data(), chunk_tracks.numel());
+        runner.copy_output("visibility", chunk_vis.data.data(), chunk_vis.numel());
+        runner.copy_output("confidence", chunk_conf.data.data(), chunk_conf.numel());
+        runner.copy_output("next_prev_tracks", next_prev_tracks.data.data(), next_prev_tracks.numel());
+        runner.copy_output("next_prev_vis_logits", next_prev_vis_logits.data.data(), next_prev_vis_logits.numel());
+        runner.copy_output("next_prev_conf_logits", next_prev_conf_logits.data.data(), next_prev_conf_logits.numel());
+
+        if (state_initialized.data[0] < 0.5f) {
+            // First window: cache track_support_* once and upload them for subsequent windows.
+            runner.copy_output("out_track_support_l0", out_track_support_l0.data.data(), out_track_support_l0.numel());
+            runner.copy_output("out_track_support_l1", out_track_support_l1.data.data(), out_track_support_l1.numel());
+            runner.copy_output("out_track_support_l2", out_track_support_l2.data.data(), out_track_support_l2.numel());
+            runner.copy_output("out_track_support_l3", out_track_support_l3.data.data(), out_track_support_l3.numel());
+            track_support_l0 = out_track_support_l0;
+            track_support_l1 = out_track_support_l1;
+            track_support_l2 = out_track_support_l2;
+            track_support_l3 = out_track_support_l3;
+        }
+
+        // Overwrite window prediction for [cursor, cursor+valid_len)
+        cotracker::assign_frames(result.tracks, chunk_tracks, cursor, valid_len);
+        cotracker::assign_scalar(result.visibility, chunk_vis, cursor, valid_len);
+        cotracker::assign_scalar(result.confidence, chunk_conf, cursor, valid_len);
+
+        // Update state for next step
+        prev_tracks = next_prev_tracks;
+        prev_vis_logits = next_prev_vis_logits;
+        prev_conf_logits = next_prev_conf_logits;
+        state_initialized.data[0] = 1.0f;
+        state_has_prev.data[0] = 1.0f;
+
+        if (cursor + window_len >= info.frames) {
+            break;
+        }
+        cursor += step;
+    }
+    return result;
+}
+
+cotracker::InferenceResult run_online_inference_sliding(const Options& opt, const HostTensor& video, const HostTensor& queries) {
     auto info = shape_from_inputs(video, queries);
     cotracker::InferenceResult result;
     result.tracks = cotracker::create_tracks_tensor(info.batch, info.frames, info.points);
@@ -202,8 +358,10 @@ void run_npy_pipeline(const Options& opt) {
     cotracker::InferenceResult outputs;
     if (opt.mode == "offline") {
         outputs = run_offline_inference(opt, video, queries);
+    } else if (opt.mode == "online_sliding") {
+        outputs = run_online_inference_sliding(opt, video, queries);
     } else {
-        outputs = run_online_inference(opt, video, queries);
+        outputs = run_online_inference_aligned(opt, video, queries);
     }
     maybe_threshold(outputs, opt.visibility_thr);
     save_outputs(opt, outputs);
@@ -220,8 +378,10 @@ void run_video_pipeline(const Options& opt) {
     cotracker::InferenceResult outputs;
     if (opt.mode == "offline") {
         outputs = run_offline_inference(opt, video, queries);
+    } else if (opt.mode == "online_sliding") {
+        outputs = run_online_inference_sliding(opt, video, queries);
     } else {
-        outputs = run_online_inference(opt, video, queries);
+        outputs = run_online_inference_aligned(opt, video, queries);
     }
     maybe_threshold(outputs, opt.visibility_thr);
     save_outputs(opt, outputs);

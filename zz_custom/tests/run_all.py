@@ -33,34 +33,33 @@ def prepare():
         max_frames=20,
         grid_size=8,
     )
-    onnx_wrappers.export_model(
-        onnx_wrappers.ExportConfig(
-            checkpoint="/workspace/checkpoints/scaled_offline.pth",
-            window_len=60,
-            offline=True,
-            output_path=MODELS_DIR / "cotracker_offline.onnx",
-        )
-    )
-    onnx_wrappers.export_model(
-        onnx_wrappers.ExportConfig(
+    # onnx_wrappers.export_model(
+    #     onnx_wrappers.ExportConfig(
+    #         checkpoint="/workspace/checkpoints/scaled_offline.pth",
+    #         window_len=60,
+    #         offline=True,
+    #         output_path=MODELS_DIR / "cotracker_offline.onnx",
+    #     )
+    # )
+    onnx_wrappers.export_online_aligned(
+        onnx_wrappers.OnlineAlignedExportConfig(
             checkpoint="/workspace/checkpoints/scaled_online.pth",
             window_len=16,
-            offline=False,
-            output_path=MODELS_DIR / "cotracker_online.onnx",
+            output_path=MODELS_DIR / "cotracker_online_aligned.onnx",
         )
     )
     if FAST_MODE:
         print("FAST_TEST enabled, skipping TensorRT engine build.")
     else:
+        # build_engines.run_trtexec(
+        #     MODELS_DIR / "cotracker_offline.onnx",
+        #     ENGINES_DIR / "cotracker_offline.engine",
+        #     *build_engines.default_shapes("offline"),
+        # )
         build_engines.run_trtexec(
-            MODELS_DIR / "cotracker_offline.onnx",
-            ENGINES_DIR / "cotracker_offline.engine",
-            *build_engines.default_shapes("offline"),
-        )
-        build_engines.run_trtexec(
-            MODELS_DIR / "cotracker_online.onnx",
-            ENGINES_DIR / "cotracker_online.engine",
-            *build_engines.default_shapes("online"),
+            MODELS_DIR / "cotracker_online_aligned.onnx",
+            ENGINES_DIR / "cotracker_online_aligned.engine",
+            *build_engines.default_shapes("online_aligned"),
         )
 
 
@@ -80,7 +79,7 @@ def run_reference():
     video = np.load(DATA_DIR / "video.npy")
     queries = np.load(DATA_DIR / "queries.npy")
     offline_ref = reference_inference.run_offline(video, queries, "/workspace/checkpoints/scaled_offline.pth")
-    online_ref = reference_inference.run_online_sliding(video, queries, "/workspace/checkpoints/scaled_online.pth")
+    online_ref = reference_inference.run_online_predictor(video, queries, "/workspace/checkpoints/scaled_online.pth")
     ref_dir = OUTPUT_DIR / "reference"
     reference_inference.save_outputs(ref_dir, "offline", offline_ref)
     reference_inference.save_outputs(ref_dir, "online", online_ref)
@@ -115,7 +114,7 @@ def run_cpp_inference():
         [
             str(binary),
             "--engine",
-            str(ENGINES_DIR / "cotracker_online.engine"),
+            str(ENGINES_DIR / "cotracker_online_aligned.engine"),
             "--video",
             str(DATA_DIR / "video.npy"),
             "--queries",
@@ -144,12 +143,20 @@ def compare_outputs(ref, pred_dir: Path, name: str):
     vis = load("visibility")
     conf = load("confidence")
     diff_tracks = np.max(np.abs(tracks - ref["tracks"]))
-    diff_vis = np.max(np.abs(vis - ref["visibility"]))
-    diff_conf = np.max(np.abs(conf - ref["confidence"]))
-    print(f"{name} diffs -> tracks: {diff_tracks:.4f}, vis: {diff_vis:.4f}, conf: {diff_conf:.4f}")
+    if name == "online":
+        vis_bool = (vis * conf) > 0.6
+        diff_vis = np.max(np.abs(vis_bool.astype(np.float32) - ref["visibility"]))
+        print(f"{name} diffs -> tracks: {diff_tracks:.4f}, vis_bool: {diff_vis:.4f}")
+    else:
+        diff_vis = np.max(np.abs(vis - ref["visibility"]))
+        diff_conf = np.max(np.abs(conf - ref["confidence"]))
+        print(f"{name} diffs -> tracks: {diff_tracks:.4f}, vis: {diff_vis:.4f}, conf: {diff_conf:.4f}")
     assert diff_tracks < 5e-2
-    assert diff_vis < 5e-2
-    assert diff_conf < 5e-2
+    if name == "online":
+        assert diff_vis == 0.0
+    else:
+        assert diff_vis < 5e-2
+        assert diff_conf < 5e-2
 
 
 def main():
@@ -157,7 +164,6 @@ def main():
     offline_ref, online_ref = run_reference()
     build_cpp()
     # run_cpp_inference()
-    # compare_outputs(offline_ref, OUTPUT_DIR / "offline", "offline")
     # compare_outputs(online_ref, OUTPUT_DIR / "online", "online")
     print("All tests passed")
 

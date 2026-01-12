@@ -45,6 +45,19 @@ def default_shapes(name: str) -> Tuple[str, str, str]:
             "video:1x20x3x384x512,queries:1x64x3",
             "video:2x32x3x384x512,queries:2x128x3",
         )
+    if name == "online_aligned":
+        # Inputs:
+        # - video: (B, 16, 3, 384, 512)
+        # - queries: (B, N, 3)
+        # - prev_tracks: (B, 8, N, 2)
+        # - prev_vis_logits/prev_conf_logits: (B, 8, N)
+        # - track_support_l{i}: (B, 49, N, 128) for i in [0..3]
+        # - state_initialized/state_has_prev: (1)
+        return (
+            "video:1x16x3x384x512,queries:1x16x3,prev_tracks:1x8x16x2,prev_vis_logits:1x8x16,prev_conf_logits:1x8x16,track_support_l0:1x49x16x128,track_support_l1:1x49x16x128,track_support_l2:1x49x16x128,track_support_l3:1x49x16x128,state_initialized:1,state_has_prev:1",
+            "video:1x16x3x384x512,queries:1x64x3,prev_tracks:1x8x64x2,prev_vis_logits:1x8x64,prev_conf_logits:1x8x64,track_support_l0:1x49x64x128,track_support_l1:1x49x64x128,track_support_l2:1x49x64x128,track_support_l3:1x49x64x128,state_initialized:1,state_has_prev:1",
+            "video:2x16x3x384x512,queries:2x128x3,prev_tracks:2x8x128x2,prev_vis_logits:2x8x128,prev_conf_logits:2x8x128,track_support_l0:2x49x128x128,track_support_l1:2x49x128x128,track_support_l2:2x49x128x128,track_support_l3:2x49x128x128,state_initialized:1,state_has_prev:1",
+        )
     return (
         "video:1x8x3x384x512,queries:1x16x3",
         "video:1x16x3x384x512,queries:1x64x3",
@@ -64,6 +77,7 @@ def cli():
     tasks = {
         "offline": (onnx_dir / "cotracker_offline.onnx", engine_dir / "cotracker_offline.engine"),
         "online": (onnx_dir / "cotracker_online.onnx", engine_dir / "cotracker_online.engine"),
+        "online_aligned": (onnx_dir / "cotracker_online_aligned.onnx", engine_dir / "cotracker_online_aligned.engine"),
     }
 
     for name, (onnx_path, engine_path) in tasks.items():

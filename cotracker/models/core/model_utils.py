@@ -311,45 +311,60 @@ def sample_features5d(input, coords):
     """
 
     B, T, C, H, W = input.shape
-    device = input.device
     query_shape = coords.shape
     coords_flat = coords.reshape(B, -1, 3)
     t = coords_flat[..., 0]
     x = coords_flat[..., 1]
     y = coords_flat[..., 2]
+
     t0_raw = torch.floor(t)
-    min_t = torch.tensor(0.0, device=device)
-    max_t = torch.tensor(float(T - 1), device=device)
+    min_t = torch.tensor(0.0, device=input.device, dtype=t.dtype)
+    max_t = torch.tensor(float(T - 1), device=input.device, dtype=t.dtype)
     t0 = torch.clamp(t0_raw, min=min_t, max=max_t)
     t1 = torch.clamp(t0 + 1, max=max_t)
     alpha = (t - t0).unsqueeze(-1)
 
-    norm_x = (x / (W - 1)) * 2 - 1
-    norm_y = (y / (H - 1)) * 2 - 1
+    x = torch.clamp(x, 0.0, float(W - 1))
+    y = torch.clamp(y, 0.0, float(H - 1))
 
-    def _sample(frame_indices):
-        samples = torch.zeros(B, norm_x.shape[1], C, device=device, dtype=input.dtype)
-        for b in range(B):
-            frame_indices_b = frame_indices[b].long()
-            for frame_id in range(T):
-                mask = frame_indices_b == frame_id
-                if not torch.any(mask):
-                    continue
-                coords_local = torch.stack([norm_x[b, mask], norm_y[b, mask]], dim=-1)
-                grid = coords_local.view(1, 1, -1, 2)
-                frame = input[b, frame_id].unsqueeze(0)
-                feats = torch.nn.functional.grid_sample(
-                    frame,
-                    grid,
-                    align_corners=True,
-                    padding_mode="border",
-                ).squeeze(2).permute(0, 2, 1)
-                samples[b, mask] = feats[0]
-        return samples
+    x0 = torch.floor(x)
+    y0 = torch.floor(y)
+    x1 = torch.clamp(x0 + 1.0, max=float(W - 1))
+    y1 = torch.clamp(y0 + 1.0, max=float(H - 1))
 
-    samples0 = _sample(t0)
-    samples1 = _sample(t1)
-    blended = (1 - alpha) * samples0 + alpha * samples1
+    wx = (x - x0).unsqueeze(-1)
+    wy = (y - y0).unsqueeze(-1)
+
+    x0i = x0.to(torch.int64)
+    x1i = x1.to(torch.int64)
+    y0i = y0.to(torch.int64)
+    y1i = y1.to(torch.int64)
+    t0i = t0.to(torch.int64)
+    t1i = t1.to(torch.int64)
+
+    hw = H * W
+    input_tc = input.permute(0, 2, 1, 3, 4).reshape(B, C, T * hw)
+
+    def _gather(ti, yi, xi):
+        idx = ti * hw + yi * W + xi
+        idx = idx.unsqueeze(1).expand(B, C, idx.shape[1])
+        out = torch.gather(input_tc, dim=2, index=idx)
+        return out.permute(0, 2, 1)
+
+    def _sample_at(ti):
+        v00 = _gather(ti, y0i, x0i)
+        v10 = _gather(ti, y0i, x1i)
+        v01 = _gather(ti, y1i, x0i)
+        v11 = _gather(ti, y1i, x1i)
+        w00 = (1.0 - wx) * (1.0 - wy)
+        w10 = wx * (1.0 - wy)
+        w01 = (1.0 - wx) * wy
+        w11 = wx * wy
+        return v00 * w00 + v10 * w10 + v01 * w01 + v11 * w11
+
+    samples0 = _sample_at(t0i)
+    samples1 = _sample_at(t1i)
+    blended = (1.0 - alpha) * samples0 + alpha * samples1
     spatial_shape = query_shape[1:-1]
     return blended.reshape(B, *spatial_shape, C)
 
