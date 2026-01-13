@@ -165,8 +165,8 @@ def main() -> None:
     # cpp_tensor = load_tensor(cpp_path, args.cpp_shape)
     # ref_tensor = load_tensor(ref_path, args.ref_shape)
 
-    cpp_tensor = np.load('/workspace/zz_custom/build/outputs/online/tracks.npy')
-    ref_tensor = np.load('/workspace/zz_custom/build/outputs/reference/online_tracks.npy')
+    cpp_tensor = np.load('/workspace/zz_custom/build/outputs/apple_online/tracks.npy')
+    ref_tensor = np.load('/workspace/data_online.npy')
 
     if cpp_tensor.ndim != 4 or ref_tensor.ndim != 4:
         raise ValueError("期望张量形状为 (B, T, N, 2)。")

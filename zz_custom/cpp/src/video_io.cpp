@@ -29,6 +29,8 @@ VideoSequence load_video_frames(const std::string& path, int target_height, int 
         throw std::runtime_error("Failed to open video: " + path);
     }
     VideoSequence seq;
+    seq.orig_width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+    seq.orig_height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
     seq.width = target_width;
     seq.height = target_height;
     seq.fps = cap.get(cv::CAP_PROP_FPS);
@@ -37,6 +39,10 @@ VideoSequence load_video_frames(const std::string& path, int target_height, int 
     }
     cv::Mat frame;
     while (cap.read(frame)) {
+        if (seq.orig_width == 0 || seq.orig_height == 0) {
+            seq.orig_width = frame.cols;
+            seq.orig_height = frame.rows;
+        }
         cv::Mat resized;
         if (frame.cols != target_width || frame.rows != target_height) {
             cv::resize(frame, resized, cv::Size(target_width, target_height));
@@ -51,30 +57,39 @@ VideoSequence load_video_frames(const std::string& path, int target_height, int 
     return seq;
 }
 
-HostTensor video_to_tensor(const VideoSequence& video, int batch) {
+HostTensor video_to_tensor(const VideoSequence& video, int batch, int target_height, int target_width) {
     if (batch <= 0) {
         throw std::runtime_error("batch must be positive");
     }
+    if (target_height <= 0 || target_width <= 0) {
+        throw std::runtime_error("target_height/target_width must be positive");
+    }
     const int frames = static_cast<int>(video.frames.size());
     const int channels = 3;
-    const size_t frame_plane = static_cast<size_t>(channels) * video.height * video.width;
+    const size_t frame_plane = static_cast<size_t>(channels) * target_height * target_width;
 
     std::vector<float> base(frame_plane * frames);
     HostTensor tensor;
-    tensor.shape = {batch, frames, channels, video.height, video.width};
+    tensor.shape = {batch, frames, channels, target_height, target_width};
     tensor.data.resize(static_cast<size_t>(batch) * frame_plane * frames);
 
     for (int t = 0; t < frames; ++t) {
-        cv::Mat rgb = convert_to_rgb(video.frames[t]);
+        cv::Mat resized;
+        if (video.frames[t].cols != target_width || video.frames[t].rows != target_height) {
+            cv::resize(video.frames[t], resized, cv::Size(target_width, target_height));
+        } else {
+            resized = video.frames[t];
+        }
+        cv::Mat rgb = convert_to_rgb(resized);
         cv::Mat float_frame;
         rgb.convertTo(float_frame, CV_32FC3);
         const float* src = reinterpret_cast<float*>(float_frame.data);
         for (int c = 0; c < channels; ++c) {
-            const size_t offset = static_cast<size_t>(t * channels + c) * video.height * video.width;
-            for (int y = 0; y < video.height; ++y) {
-                for (int x = 0; x < video.width; ++x) {
-                    base[offset + static_cast<size_t>(y * video.width + x)] =
-                        src[y * video.width * channels + x * channels + c];
+            const size_t offset = static_cast<size_t>(t * channels + c) * target_height * target_width;
+            for (int y = 0; y < target_height; ++y) {
+                for (int x = 0; x < target_width; ++x) {
+                    base[offset + static_cast<size_t>(y * target_width + x)] =
+                        src[y * target_width * channels + x * channels + c];
                 }
             }
         }
@@ -150,7 +165,9 @@ void render_tracks_to_video(const std::string& output_path,
                             const VideoSequence& base,
                             const HostTensor& tracks,
                             const HostTensor& visibility,
-                            float visibility_thr) {
+                            float visibility_thr,
+                            int output_width,
+                            int output_height) {
     if (tracks.shape.size() != 4 || tracks.shape[0] != 1) {
         throw std::runtime_error("render_tracks_to_video expects tracks with shape (1,T,N,2)");
     }
@@ -162,6 +179,12 @@ void render_tracks_to_video(const std::string& output_path,
     }
 
     const float draw_thr = visibility_thr >= 0.0f ? visibility_thr : 0.5f;
+    if (output_width <= 0) {
+        output_width = base.width;
+    }
+    if (output_height <= 0) {
+        output_height = base.height;
+    }
     std::vector<cv::Mat> rendered;
     rendered.reserve(frames);
 
@@ -169,7 +192,12 @@ void render_tracks_to_video(const std::string& output_path,
     std::vector<bool> prevVisible(points, false);
 
     for (int t = 0; t < frames; ++t) {
-        cv::Mat frame = base.frames[t].clone();
+        cv::Mat frame;
+        if (base.frames[t].cols != output_width || base.frames[t].rows != output_height) {
+            cv::resize(base.frames[t], frame, cv::Size(output_width, output_height));
+        } else {
+            frame = base.frames[t].clone();
+        }
         size_t frameOffsetTracks = static_cast<size_t>(t) * points * 2;
         size_t frameOffsetVis = static_cast<size_t>(t) * points;
         const float* tracksPtr = tracks.data.data();
@@ -200,7 +228,7 @@ void render_tracks_to_video(const std::string& output_path,
     }
     cv::VideoWriter writer;
     writer.open(output_path, cv::VideoWriter::fourcc('m', 'p', '4', 'v'), base.fps,
-                cv::Size(base.width, base.height));
+                cv::Size(output_width, output_height));
     if (!writer.isOpened()) {
         throw std::runtime_error("Failed to open VideoWriter for " + output_path);
     }

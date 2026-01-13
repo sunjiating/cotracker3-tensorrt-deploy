@@ -22,7 +22,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--video_path",
-        default="./assets/apple.mp4",
+        default="./assets/test.mp4",
         help="path to a video",
     )
     parser.add_argument(
@@ -30,7 +30,7 @@ if __name__ == "__main__":
         default='/workspace/checkpoints/scaled_online.pth',
         help="CoTracker model parameters",
     )
-    parser.add_argument("--grid_size", type=int, default=10, help="Regular grid size")
+    parser.add_argument("--grid_size", type=int, default=8, help="Regular grid size")
     parser.add_argument(
         "--grid_query_frame",
         type=int,
@@ -67,6 +67,8 @@ if __name__ == "__main__":
         )
 
     # Iterating over video frames, processing one window at a time:
+    import time
+    start_time = time.time()
     is_first_step = True
     for i, frame in enumerate(
         iio.imiter(
@@ -92,6 +94,7 @@ if __name__ == "__main__":
     )
 
     print("Tracks are computed")
+    print("Total time:", time.time() - start_time)
 
     # save a video with predicted tracks
     seq_name = args.video_path.split("/")[-1]

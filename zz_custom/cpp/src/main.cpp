@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <string>
 
@@ -27,6 +29,7 @@ struct Options {
     bool mp4_mode{false};
     int batch{2};
     int max_frames{32};
+    bool timing{false};
 };
 
 Options parse_args(int argc, char** argv) {
@@ -72,6 +75,8 @@ Options parse_args(int argc, char** argv) {
             opt.batch = std::stoi(next());
         } else if (arg == "--max_frames") {
             opt.max_frames = std::stoi(next());
+        } else if (arg == "--timing") {
+            opt.timing = true;
         } else {
             throw std::runtime_error("Unknown flag: " + arg);
         }
@@ -110,6 +115,19 @@ struct ShapeInfo {
     int64_t frames;
     int64_t points;
 };
+
+double elapsed_ms(std::chrono::steady_clock::time_point start, std::chrono::steady_clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+void print_inference_timing(const Options& opt, const ShapeInfo& info, double ms) {
+    const double seconds = ms / 1000.0;
+    const double total_frames = static_cast<double>(info.batch) * static_cast<double>(info.frames);
+    const double fps = seconds > 0.0 ? (total_frames / seconds) : 0.0;
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "[timing] mode=" << opt.mode << " time=" << seconds << "s"
+              << "  throughput=" << fps << " frames/s (B*T=" << info.batch << "*" << info.frames << ")\n";
+}
 
 ShapeInfo shape_from_inputs(const HostTensor& video, const HostTensor& queries) {
     if (video.shape.size() != 5 || queries.shape.size() != 3) {
@@ -355,13 +373,21 @@ void save_outputs(const Options& opt, const cotracker::InferenceResult& outputs)
 void run_npy_pipeline(const Options& opt) {
     HostTensor video = cotracker::load_npy(opt.video_npy);
     HostTensor queries = cotracker::load_npy(opt.queries_npy);
+    ShapeInfo info = shape_from_inputs(video, queries);
     cotracker::InferenceResult outputs;
+
+    auto t0 = std::chrono::steady_clock::now();
     if (opt.mode == "offline") {
         outputs = run_offline_inference(opt, video, queries);
     } else if (opt.mode == "online_sliding") {
         outputs = run_online_inference_sliding(opt, video, queries);
     } else {
         outputs = run_online_inference_aligned(opt, video, queries);
+    }
+    auto t1 = std::chrono::steady_clock::now();
+
+    if (opt.timing) {
+        print_inference_timing(opt, info, elapsed_ms(t0, t1));
     }
     maybe_threshold(outputs, opt.visibility_thr);
     save_outputs(opt, outputs);
@@ -373,9 +399,12 @@ void run_video_pipeline(const Options& opt) {
         std::cout << "Trimming video to first " << opt.max_frames << " frames to fit offline engine profile\n";
         sequence.frames.resize(opt.max_frames);
     }
-    HostTensor video = cotracker::video_to_tensor(sequence, opt.batch);
-    HostTensor queries = cotracker::build_grid_queries(opt.grid_size, sequence.width, sequence.height, opt.batch);
+    HostTensor video = cotracker::video_to_tensor(sequence, opt.batch, opt.target_height, opt.target_width);
+    HostTensor queries = cotracker::build_grid_queries(opt.grid_size, opt.target_width, opt.target_height, opt.batch);
+    ShapeInfo info = shape_from_inputs(video, queries);
     cotracker::InferenceResult outputs;
+
+    auto t0 = std::chrono::steady_clock::now();
     if (opt.mode == "offline") {
         outputs = run_offline_inference(opt, video, queries);
     } else if (opt.mode == "online_sliding") {
@@ -383,12 +412,34 @@ void run_video_pipeline(const Options& opt) {
     } else {
         outputs = run_online_inference_aligned(opt, video, queries);
     }
+    auto t1 = std::chrono::steady_clock::now();
+
+    if (opt.timing) {
+        print_inference_timing(opt, info, elapsed_ms(t0, t1));
+    }
+
+    // Tracks are predicted in the resized (target) coordinate system. Map them back to the original input size.
+    if (sequence.orig_width > 0 && sequence.orig_height > 0 && opt.target_width > 0 && opt.target_height > 0 &&
+        (sequence.orig_width != opt.target_width || sequence.orig_height != opt.target_height)) {
+        const float scale_x = static_cast<float>(sequence.orig_width) / static_cast<float>(opt.target_width);
+        const float scale_y = static_cast<float>(sequence.orig_height) / static_cast<float>(opt.target_height);
+        for (size_t i = 0; i + 1 < outputs.tracks.data.size(); i += 2) {
+            outputs.tracks.data[i + 0] *= scale_x;
+            outputs.tracks.data[i + 1] *= scale_y;
+        }
+    }
     maybe_threshold(outputs, opt.visibility_thr);
     save_outputs(opt, outputs);
     HostTensor tracks_b0 = cotracker::select_batch(outputs.tracks, 0);
     HostTensor vis_b0 = cotracker::select_batch(outputs.visibility, 0);
-    cotracker::render_tracks_to_video(opt.output_video_path, sequence, tracks_b0, vis_b0,
-                                      opt.visibility_thr >= 0.0f ? opt.visibility_thr : 0.5f);
+    cotracker::render_tracks_to_video(
+        opt.output_video_path,
+        sequence,
+        tracks_b0,
+        vis_b0,
+        opt.visibility_thr >= 0.0f ? opt.visibility_thr : 0.5f,
+        sequence.orig_width,
+        sequence.orig_height);
 }
 
 int main(int argc, char** argv) {
