@@ -29,10 +29,12 @@ VideoSequence load_video_frames(const std::string& path, int target_height, int 
         throw std::runtime_error("Failed to open video: " + path);
     }
     VideoSequence seq;
+    (void)target_height;
+    (void)target_width;
     seq.orig_width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
     seq.orig_height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
-    seq.width = target_width;
-    seq.height = target_height;
+    seq.width = seq.orig_width;
+    seq.height = seq.orig_height;
     seq.fps = cap.get(cv::CAP_PROP_FPS);
     if (seq.fps <= 0.0) {
         seq.fps = 30.0;
@@ -42,14 +44,10 @@ VideoSequence load_video_frames(const std::string& path, int target_height, int 
         if (seq.orig_width == 0 || seq.orig_height == 0) {
             seq.orig_width = frame.cols;
             seq.orig_height = frame.rows;
+            seq.width = seq.orig_width;
+            seq.height = seq.orig_height;
         }
-        cv::Mat resized;
-        if (frame.cols != target_width || frame.rows != target_height) {
-            cv::resize(frame, resized, cv::Size(target_width, target_height));
-        } else {
-            resized = frame;
-        }
-        seq.frames.push_back(resized.clone());
+        seq.frames.push_back(frame.clone());
     }
     if (seq.frames.empty()) {
         throw std::runtime_error("No frames decoded from: " + path);
