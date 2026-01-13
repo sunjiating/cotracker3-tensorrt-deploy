@@ -51,6 +51,24 @@
   7. Engine 在 batch ≥ 2 时更稳定，故默认 `--batch=2`，渲染仅取第 0 个 batch。
 - **示例命令（在线）**：
   ```bash
+   onnx推理:
+   python3 zz_custom/export/onnx_inference.py \
+    --model /workspace/zz_custom/build/models/cotracker_online_aligned.onnx \
+    --output /workspace/zz_custom/build/outputs/onnx_online \
+    --grid 8 \
+    --batch 1 \
+    --input_video /workspace/assets/test.mp4 \
+    --disable_mem_pattern \
+    --fallback_cpu_on_oom
+
+   pt reference运行:
+    python3 zz_custom/export/reference_inference.py \
+    --mode online --checkpoint /workspace/checkpoints/scaled_online.pth \
+    --video /workspace/zz_custom/build/outputs/onnx_online/video.npy \
+    --queries /workspace/zz_custom/build/outputs/onnx_online/queries.npy \
+    --output /workspace/zz_custom/build/outputs/reference_online
+
+   tensorrt推理
   LD_LIBRARY_PATH=/usr/local/tensorrt/TensorRT-10.12.0.36/lib:/usr/local/tensorrt/TensorRT-10.12.0.36/targets/x86_64-linux-gnu/lib:/usr/local/cuda/lib64 \
     zz_custom/build/cpp/cotracker_trt \
     --engine zz_custom/build/engines/cotracker_online_aligned.engine \
@@ -61,6 +79,23 @@
   ```
 - **示例命令（离线）**：
   ```bash
+  onnx推理:
+    python3 zz_custom/export/onnx_inference.py \
+    --model /workspace/zz_custom/build/models/cotracker_offline.onnx \
+    --output /workspace/zz_custom/build/outputs/onnx_offline \
+    --grid 8 \
+    --batch 1 \
+    --max_frames 20 \
+    --input_video /workspace/assets/apple.mp4
+
+   pt reference运行:
+    python3 zz_custom/export/reference_inference.py \
+    --mode offline --checkpoint /workspace/checkpoints/scaled_offline.pth \
+    --video /workspace/zz_custom/build/outputs/onnx_offline/video.npy \
+    --queries /workspace/zz_custom/build/outputs/onnx_offline/queries.npy \
+    --output /workspace/zz_custom/build/outputs/reference_offline
+
+
   LD_LIBRARY_PATH=/usr/local/tensorrt/TensorRT-10.12.0.36/lib:/usr/local/tensorrt/TensorRT-10.12.0.36/targets/x86_64-linux-gnu/lib:/usr/local/cuda/lib64 \
     zz_custom/build/cpp/cotracker_trt \
     --engine zz_custom/build/engines/cotracker_offline.engine \
