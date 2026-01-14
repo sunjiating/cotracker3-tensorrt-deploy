@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -8,6 +9,7 @@ from cotracker.predictor import CoTrackerOnlinePredictor
 from cotracker.models.build_cotracker import build_cotracker
 
 from zz_custom.export.onnx_wrappers import _OnlineAlignedWrapper
+from zz_custom.infer.utils import _grid_queries_numpy, _infer_hw_from_video, _load_queries_npy, _load_video_npy, _maybe_rescale_tracks, _slice_with_padding, _video_mp4_to_numpy, save_outputs
 
 
 def _to_device(arr: np.ndarray, device: torch.device) -> torch.Tensor:
@@ -116,19 +118,6 @@ def run_online_predictor(
     }
 
 
-def _slice_with_padding(video: torch.Tensor, start: int, window_len: int) -> tuple[torch.Tensor, int]:
-    if video.ndim != 5:
-        raise ValueError(f"Expected video (B,T,3,H,W), got shape={tuple(video.shape)}")
-    total_frames = int(video.shape[1])
-    end = min(start + window_len, total_frames)
-    valid_len = end - start
-    if valid_len <= 0:
-        raise ValueError("_slice_with_padding called with empty slice")
-    chunk = video[:, start:end]
-    if valid_len < window_len:
-        pad = chunk[:, -1:, ...].expand(-1, window_len - valid_len, -1, -1, -1)
-        chunk = torch.cat([chunk, pad], dim=1)
-    return chunk.contiguous(), valid_len
 
 
 def run_online_aligned(
@@ -227,11 +216,6 @@ def run_online_aligned(
     }
 
 
-def save_outputs(out_dir: Path, prefix: Optional[str], data: Dict[str, np.ndarray]) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for key, value in data.items():
-        name = f"{prefix}_{key}.npy" if prefix else f"{key}.npy"
-        np.save(out_dir / name, value)
 
 
 def cli() -> None:
@@ -240,14 +224,53 @@ def cli() -> None:
     parser = argparse.ArgumentParser(description="PyTorch reference inference for CoTracker")
     parser.add_argument("--mode", choices=["offline", "online_sliding", "online_predictor", "online"], default="online")
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--video", required=True, help="Path to video.npy (B,T,3,H,W)")
-    parser.add_argument("--queries", required=True, help="Path to queries.npy (B,N,3)")
-    parser.add_argument("--output", required=True, help="Output directory")
-    parser.add_argument("--window", type=int, default=16)
+    parser.add_argument("--output", type=Path, required=True, help="Directory to write tracks/visibility/confidence")
+    parser.add_argument("--video", type=Path, help="Path to input video.npy (B,T,3,H,W)")
+    parser.add_argument("--queries", type=Path, help="Path to queries.npy (B,N,3)")
+    parser.add_argument("--input_video", type=Path, help="Path to an input .mp4")
+    parser.add_argument("--target_height", type=int, default=384)
+    parser.add_argument("--target_width", type=int, default=512)
+    parser.add_argument("--grid", type=int, default=8, help="grid_size for mp4 mode")
+    parser.add_argument("--batch", type=int, default=2, help="batch size for mp4 mode")
+    parser.add_argument("--max_frames", type=int, default=None, help="optional max frames for mp4 mode")
+    parser.add_argument("--window", type=int, default=16, help="window_len for online_sliding")
+    parser.add_argument("--step", type=int, default=None, help="step for online_sliding (default window/2)")
     args = parser.parse_args()
 
-    video = np.load(args.video)
-    queries = np.load(args.queries)
+    orig_h = None
+    orig_w = None
+    if args.input_video is not None:
+        video, orig_h, orig_w = _video_mp4_to_numpy(
+            args.input_video,
+            target_height=args.target_height,
+            target_width=args.target_width,
+            batch=args.batch,
+            max_frames=args.max_frames,
+        )
+        width, height = _infer_hw_from_video(video)
+        queries = _grid_queries_numpy(args.grid, width=width, height=height, batch=args.batch)
+        meta = {
+            "source": str(args.input_video),
+            "batch": int(video.shape[0]),
+            "frames": int(video.shape[1]),
+            "height": int(video.shape[3]),
+            "width": int(video.shape[4]),
+            "points": int(queries.shape[1]),
+        }
+        if orig_w and orig_h:
+            meta["orig_width"] = int(orig_w)
+            meta["orig_height"] = int(orig_h)
+            meta["target_width"] = int(video.shape[4])
+            meta["target_height"] = int(video.shape[3])
+        args.output.mkdir(parents=True, exist_ok=True)
+        np.save(args.output / "video.npy", video)
+        np.save(args.output / "queries.npy", queries)
+        (args.output / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    else:
+        if args.video is None or args.queries is None:
+            raise SystemExit("Provide either --input_video or both --video/--queries")
+        video = _load_video_npy(args.video)
+        queries = _load_queries_npy(args.queries)
 
     if args.mode == "offline":
         out = run_offline(video, queries, args.checkpoint, window_len=60)
@@ -258,7 +281,12 @@ def cli() -> None:
     else:
         out = run_online_aligned(video, queries, args.checkpoint, window_len=args.window)
 
-    save_outputs(Path(args.output), None, out)
+    if orig_w is not None and orig_h is not None:
+        tgt_w, tgt_h = _infer_hw_from_video(video)
+        if tgt_w != orig_w or tgt_h != orig_h:
+            _maybe_rescale_tracks(out, scale_x=float(orig_w) / float(tgt_w), scale_y=float(orig_h) / float(tgt_h))
+
+    save_outputs(args.output, out)
     print(f"Saved outputs to {args.output}")
 
 

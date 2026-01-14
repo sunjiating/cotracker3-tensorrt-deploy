@@ -95,6 +95,7 @@ if __name__ == "__main__":
 
     print("Tracks are computed")
     print("Total time:", time.time() - start_time)
+    np.save("data_online.npy", pred_tracks.cpu().numpy())
 
     # save a video with predicted tracks
     seq_name = args.video_path.split("/")[-1]

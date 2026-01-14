@@ -52,57 +52,61 @@
 - **示例命令（在线）**：
   ```bash
    onnx推理:
-   python3 zz_custom/export/onnx_inference.py \
+   python3 zz_custom/infer/onnx_inference.py \
     --model /workspace/zz_custom/build/models/cotracker_online_aligned.onnx \
     --output /workspace/zz_custom/build/outputs/onnx_online \
     --grid 8 \
     --batch 1 \
-    --input_video /workspace/assets/test.mp4 \
+    --input_video /workspace/assets/apple.mp4 \
     --disable_mem_pattern \
     --fallback_cpu_on_oom
 
    pt reference运行:
-    python3 zz_custom/export/reference_inference.py \
+    python3 zz_custom/infer/reference_inference.py \
     --mode online --checkpoint /workspace/checkpoints/scaled_online.pth \
-    --video /workspace/zz_custom/build/outputs/onnx_online/video.npy \
-    --queries /workspace/zz_custom/build/outputs/onnx_online/queries.npy \
+    --input_video /workspace/assets/apple.mp4 \
+    --grid 8 \
+    --batch 1 \
     --output /workspace/zz_custom/build/outputs/reference_online
 
    tensorrt推理
   LD_LIBRARY_PATH=/usr/local/tensorrt/TensorRT-10.12.0.36/lib:/usr/local/tensorrt/TensorRT-10.12.0.36/targets/x86_64-linux-gnu/lib:/usr/local/cuda/lib64 \
     zz_custom/build/cpp/cotracker_trt \
     --engine zz_custom/build/engines/cotracker_online_aligned.engine \
-    --output zz_custom/build/outputs/apple_online \
+    --output zz_custom/build/outputs/trt_online \
     --input_video assets/apple.mp4 \
-    --output_video zz_custom/build/outputs/apple_tracked.mp4 \
-    --window 16 --step 8 --grid 8 --batch 2 --thr 0.5
+    --output_video zz_custom/build/outputs/trt_tracked.mp4 \
+    --window 16 --step 8 --grid 8 --batch 1 --thr 0.5
   ```
 - **示例命令（离线）**：
   ```bash
   onnx推理:
-    python3 zz_custom/export/onnx_inference.py \
+    python3 zz_custom/infer/onnx_inference.py \
     --model /workspace/zz_custom/build/models/cotracker_offline.onnx \
     --output /workspace/zz_custom/build/outputs/onnx_offline \
     --grid 8 \
     --batch 1 \
-    --max_frames 20 \
-    --input_video /workspace/assets/apple.mp4
+    --max_frames 200 \
+    --input_video /workspace/assets/test.mp4 \
+    --disable_mem_pattern \
+    --fallback_cpu_on_oom
 
    pt reference运行:
-    python3 zz_custom/export/reference_inference.py \
+    python3 zz_custom/infer/reference_inference.py \
     --mode offline --checkpoint /workspace/checkpoints/scaled_offline.pth \
-    --video /workspace/zz_custom/build/outputs/onnx_offline/video.npy \
-    --queries /workspace/zz_custom/build/outputs/onnx_offline/queries.npy \
+    --input_video /workspace/assets/test.mp4 \
+    --grid 8 \
+    --batch 1 \
     --output /workspace/zz_custom/build/outputs/reference_offline
 
 
   LD_LIBRARY_PATH=/usr/local/tensorrt/TensorRT-10.12.0.36/lib:/usr/local/tensorrt/TensorRT-10.12.0.36/targets/x86_64-linux-gnu/lib:/usr/local/cuda/lib64 \
     zz_custom/build/cpp/cotracker_trt \
     --engine zz_custom/build/engines/cotracker_offline.engine \
-    --output zz_custom/build/outputs/apple_offline \
-    --input_video assets/apple.mp4 \
-    --output_video zz_custom/build/outputs/apple_offline_tracked.mp4 \
-    --mode offline --grid 8 --batch 2 --max_frames 32 --thr 0.5
+    --output zz_custom/build/outputs/trt_offline \
+    --input_video assets/test.mp4 \
+    --output_video zz_custom/build/outputs/trt_offline_tracked.mp4 \
+    --mode offline --grid 8 --batch 1 --max_frames 200 --thr 0.5
   ```
 
 ## 接口与参数说明
@@ -120,6 +124,8 @@
 | `--thr` | 可见性阈值；`-1` 表示不二值化，仅输出原始概率。 |
 | `--batch` | MP4 模式下复制多少份视频与查询，默认 2（建议 ≥2 以匹配 engine）。 |
 | `--max_frames` | 离线 MP4 模式允许的最大帧数（默认 32，对应离线 Engine profile 的最大帧数）。 |
+| `--timing` | 打印推理耗时与吞吐（按 `B*T` 计帧）。 |
+| `--progress` | 在线滑窗推理打印百分比进度（`online`/`online_sliding`）。 |
 
 ## 使用手册
 1. **准备数据与模型**  

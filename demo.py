@@ -24,7 +24,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--video_path",
-        default="./assets/apple.mp4",
+        default="./assets/test.mp4",
         help="path to a video",
     )
     parser.add_argument(
@@ -38,7 +38,7 @@ if __name__ == "__main__":
         # default=None,
         help="CoTracker model parameters",
     )
-    parser.add_argument("--grid_size", type=int, default=10, help="Regular grid size")
+    parser.add_argument("--grid_size", type=int, default=8, help="Regular grid size")
     parser.add_argument(
         "--grid_query_frame",
         type=int,
@@ -87,6 +87,9 @@ if __name__ == "__main__":
     else:
         model = torch.hub.load("facebookresearch/co-tracker", "cotracker3_offline")
 
+    import time
+    start_time = time.time()
+
     model = model.to(DEFAULT_DEVICE)
     video = video.to(DEFAULT_DEVICE)
 
@@ -98,6 +101,8 @@ if __name__ == "__main__":
         # segm_mask=segm_mask
     )
     print("computed")
+    print("Total time:", time.time() - start_time)
+    np.save("data_offline.npy", pred_tracks.cpu().numpy())
 
     # save a video with predicted tracks
     seq_name = args.video_path.split("/")[-1]

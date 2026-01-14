@@ -30,6 +30,7 @@ struct Options {
     int batch{2};
     int max_frames{32};
     bool timing{false};
+    bool progress{false};
 };
 
 Options parse_args(int argc, char** argv) {
@@ -77,6 +78,8 @@ Options parse_args(int argc, char** argv) {
             opt.max_frames = std::stoi(next());
         } else if (arg == "--timing") {
             opt.timing = true;
+        } else if (arg == "--progress") {
+            opt.progress = true;
         } else {
             throw std::runtime_error("Unknown flag: " + arg);
         }
@@ -127,6 +130,26 @@ void print_inference_timing(const Options& opt, const ShapeInfo& info, double ms
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "[timing] mode=" << opt.mode << " time=" << seconds << "s"
               << "  throughput=" << fps << " frames/s (B*T=" << info.batch << "*" << info.frames << ")\n";
+}
+
+void print_progress(const Options& opt, int64_t processed_frames, int64_t total_frames, int& last_percent) {
+    if (!opt.progress || total_frames <= 0) {
+        return;
+    }
+    if (processed_frames < 0) {
+        processed_frames = 0;
+    }
+    if (processed_frames > total_frames) {
+        processed_frames = total_frames;
+    }
+    const int percent = static_cast<int>((processed_frames * 100) / total_frames);
+    if (percent != last_percent) {
+        last_percent = percent;
+        std::cout << "\r[progress] " << std::setw(3) << percent << "%" << std::flush;
+        if (percent >= 100) {
+            std::cout << "\n";
+        }
+    }
 }
 
 ShapeInfo shape_from_inputs(const HostTensor& video, const HostTensor& queries) {
@@ -254,6 +277,7 @@ cotracker::InferenceResult run_online_inference_aligned(const Options& opt, cons
 
     bool supports_uploaded = false;
     int64_t cursor = 0;
+    int last_percent = -1;
     while (cursor < info.frames) {
         int64_t valid_len = 0;
         HostTensor chunk = cotracker::slice_with_padding(video, cursor, window_len, valid_len);
@@ -298,6 +322,8 @@ cotracker::InferenceResult run_online_inference_aligned(const Options& opt, cons
         cotracker::assign_scalar(result.visibility, chunk_vis, cursor, valid_len);
         cotracker::assign_scalar(result.confidence, chunk_conf, cursor, valid_len);
 
+        print_progress(opt, std::min<int64_t>(cursor + valid_len, info.frames), info.frames, last_percent);
+
         // Update state for next step
         prev_tracks = next_prev_tracks;
         prev_vis_logits = next_prev_vis_logits;
@@ -324,6 +350,7 @@ cotracker::InferenceResult run_online_inference_sliding(const Options& opt, cons
     cotracker::TrtRunner runner(opt.engine);
 
     int64_t cursor = 0;
+    int last_percent = -1;
     while (cursor < info.frames) {
         int64_t valid_len = 0;
         HostTensor chunk = cotracker::slice_with_padding(video, cursor, opt.window_len, valid_len);
@@ -348,6 +375,7 @@ cotracker::InferenceResult run_online_inference_sliding(const Options& opt, cons
         cotracker::assign_frames(result.tracks, chunk_tracks, cursor, commit_len);
         cotracker::assign_scalar(result.visibility, chunk_vis, cursor, commit_len);
         cotracker::assign_scalar(result.confidence, chunk_conf, cursor, commit_len);
+        print_progress(opt, std::min<int64_t>(cursor + commit_len, info.frames), info.frames, last_percent);
         if (window_end >= info.frames) {
             break;
         }

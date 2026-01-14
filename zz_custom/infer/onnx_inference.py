@@ -6,6 +6,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from zz_custom.infer.utils import _grid_queries_numpy, _infer_hw_from_video, _load_queries_npy, _load_video_npy, _maybe_rescale_tracks, _video_mp4_to_numpy, save_outputs, slice_with_padding
+
 
 def _available_providers() -> List[str]:
     try:
@@ -66,21 +68,6 @@ def _static_dim(dim: object, *, name: str) -> int:
     if isinstance(dim, int):
         return int(dim)
     raise ValueError(f"Expected static dim for {name}, got {dim!r}")
-
-
-def slice_with_padding(video: np.ndarray, start: int, window_len: int) -> Tuple[np.ndarray, int]:
-    if video.ndim != 5:
-        raise ValueError(f"Expected video (B,T,3,H,W), got shape {video.shape}")
-    _, total_frames, _, _, _ = video.shape
-    end = min(start + window_len, total_frames)
-    valid_len = end - start
-    if valid_len <= 0:
-        raise ValueError("slice_with_padding called with empty slice")
-    chunk = video[:, start:end]
-    if valid_len < window_len:
-        pad = np.repeat(chunk[:, -1:, ...], window_len - valid_len, axis=1)
-        chunk = np.concatenate([chunk, pad], axis=1)
-    return np.ascontiguousarray(chunk), valid_len
 
 
 def _ensure_float32(x: np.ndarray, name: str) -> np.ndarray:
@@ -307,69 +294,6 @@ def run_online_sliding_onnx(
     }
 
 
-def save_outputs(out_dir: Path, outputs: Dict[str, np.ndarray]) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    np.save(out_dir / "tracks.npy", outputs["tracks"])
-    np.save(out_dir / "visibility.npy", outputs["visibility"])
-    np.save(out_dir / "confidence.npy", outputs["confidence"])
-
-
-def _load_video_npy(path: Path) -> np.ndarray:
-    arr = np.load(path)
-    if arr.ndim != 5:
-        raise ValueError(f"Expected video.npy shape (B,T,3,H,W), got {arr.shape}")
-    return arr
-
-
-def _load_queries_npy(path: Path) -> np.ndarray:
-    arr = np.load(path)
-    if arr.ndim != 3:
-        raise ValueError(f"Expected queries.npy shape (B,N,3), got {arr.shape}")
-    return arr
-
-
-def _video_mp4_to_numpy(
-    video_path: Path,
-    *,
-    target_height: int,
-    target_width: int,
-    batch: int,
-    max_frames: Optional[int],
-) -> np.ndarray:
-    import imageio.v3 as iio
-    import torch
-    import torch.nn.functional as F
-
-    frames = []
-    for idx, frame in enumerate(iio.imiter(str(video_path), plugin="FFMPEG")):
-        frames.append(torch.from_numpy(frame).permute(2, 0, 1).float())
-        if max_frames is not None and idx + 1 >= max_frames:
-            break
-    if not frames:
-        raise ValueError(f"No frames in video: {video_path}")
-    raw = torch.stack(frames, dim=0)  # (T,3,H,W)
-    video = F.interpolate(raw, size=(target_height, target_width), mode="bilinear", align_corners=False)
-    video = video.numpy().astype(np.float32)
-    return np.stack([video for _ in range(batch)], axis=0)
-
-
-def _grid_queries_numpy(grid_size: int, width: int, height: int, batch: int) -> np.ndarray:
-    import torch
-
-    from cotracker.models.core.model_utils import get_points_on_a_grid
-
-    points = get_points_on_a_grid(grid_size, (height, width), device="cpu")  # (1,N,2)
-    num_points = points.shape[1]
-    queries = torch.cat([torch.zeros(1, num_points, 1), points], dim=-1).repeat(batch, 1, 1)
-    return queries.numpy().astype(np.float32)
-
-
-def _infer_hw_from_video(video: np.ndarray) -> Tuple[int, int]:
-    if video.ndim != 5:
-        raise ValueError(f"Expected (B,T,3,H,W), got {video.shape}")
-    return int(video.shape[-1]), int(video.shape[-2])
-
-
 def cli() -> None:
     parser = argparse.ArgumentParser(description="End-to-end ONNX inference for CoTracker (offline/online)")
     parser.add_argument(
@@ -455,8 +379,10 @@ def cli() -> None:
         ]
         return any(n in msg for n in needles)
 
+    orig_h = None
+    orig_w = None
     if args.input_video is not None:
-        video = _video_mp4_to_numpy(
+        video, orig_h, orig_w = _video_mp4_to_numpy(
             args.input_video,
             target_height=args.target_height,
             target_width=args.target_width,
@@ -473,6 +399,11 @@ def cli() -> None:
             "width": int(video.shape[4]),
             "points": int(queries.shape[1]),
         }
+        if orig_w and orig_h:
+            meta["orig_width"] = int(orig_w)
+            meta["orig_height"] = int(orig_h)
+            meta["target_width"] = int(video.shape[4])
+            meta["target_height"] = int(video.shape[3])
         args.output.mkdir(parents=True, exist_ok=True)
         np.save(args.output / "video.npy", video)
         np.save(args.output / "queries.npy", queries)
@@ -491,6 +422,11 @@ def cli() -> None:
             outputs = _run_once(["CPUExecutionProvider"])
         else:
             raise
+
+    if orig_w is not None and orig_h is not None:
+        tgt_w, tgt_h = _infer_hw_from_video(video)
+        if tgt_w != orig_w or tgt_h != orig_h:
+            _maybe_rescale_tracks(outputs, scale_x=float(orig_w) / float(tgt_w), scale_y=float(orig_h) / float(tgt_h))
 
     save_outputs(args.output, outputs)
     print(f"Saved outputs to {args.output}")
